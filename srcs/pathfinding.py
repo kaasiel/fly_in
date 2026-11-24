@@ -49,7 +49,7 @@ class DijkstraPathfinder:
             for conn in graph.neighbors[name]:
                 nxt = conn.other(name)
                 zone = graph.zones[nxt]
-                if zone.type is ZoneType.BLOCKED or nxt is banned:
+                if zone.type is ZoneType.BLOCKED or nxt in banned:
                     continue
                 bonus = -1 if zone.type is ZoneType.PRIORITY else 0
                 new = (turns + zone.type.cost, prio + bonus)
@@ -70,15 +70,39 @@ class DijkstraPathfinder:
         return path
 
     def find_paths(
-            self, graph: Graph, limit: int = 10) -> list[list[str]]:
+            self, graph: Graph, limit: int = 100) -> list[list[str]]:
+        if graph.start is None or graph.end is None:
+            return []
+
+        heap: list[tuple[int, int, tuple[str, ...]]] = [
+            (0, 0, (graph.start,))
+        ]
         paths: list[list[str]] = []
-        banned: set[str] = set()
-        for _ in range(limit):
-            path = self.pathFinder(graph, banned)
-            if path is None:
-                break
-            paths.append(path)
-            if not path[1:-1]:
-                break
-            banned.update(path[1:-1])
+        seen: set[tuple[str, ...]] = set()
+
+        while heap and len(paths) < limit:
+            turns, prio, path = heapq.heappop(heap)
+            name = path[-1]
+            if name == graph.end:
+                result = list(path)
+                if result not in paths:
+                    paths.append(result)
+                continue
+
+            for conn in graph.neighbors[name]:
+                nxt = conn.other(name)
+                if nxt in path:
+                    continue
+                zone = graph.zones[nxt]
+                if zone.type is ZoneType.BLOCKED:
+                    continue
+                new_path = path + (nxt,)
+                if new_path in seen:
+                    continue
+                seen.add(new_path)
+                bonus = -1 if zone.type is ZoneType.PRIORITY else 0
+                heapq.heappush(
+                    heap,
+                    (turns + zone.type.cost, prio + bonus, new_path),
+                )
         return paths
