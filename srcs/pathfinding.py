@@ -1,12 +1,15 @@
+"""Expose pathfinding utilities and the Dijkstra pathfinder."""
 import heapq
 from srcs import Graph, ZoneType
 
 
 def path_turns(graph: Graph, path: list[str]) -> int:
+    """Return the total movement cost of the path, excluding its start zone."""
     return sum(graph.zones[z].type.cost for z in path[1:])
 
 
 def link_cap_check(graph: Graph, path: list[str]) -> int:
+    """Return the lowest drone capacity along the path's zones and links."""
     caps = [graph.zones[z].max_drone for z in path[1:-1]]
     for a, b in zip(path, path[1:]):
         caps.append(graph.link(a, b).max_link_capacity)
@@ -14,23 +17,30 @@ def link_cap_check(graph: Graph, path: list[str]) -> int:
 
 
 class DijkstraPathfinder:
+    """Find routes through a graph using Dijkstra-style path ordering."""
+
     def __init__(self) -> None:
+        """Initialize the pathfinder with an empty path."""
         self.path: list[str] = []
 
     def print_path(self) -> None:
+        """Print a found path."""
         print(self.path)
 
     def zonelisting(self, graph: Graph) -> None:
+        """Prinnt the parsed zone."""
         for e in graph.zones:
             print(e)
 
     def conneListing(self, graph: Graph) -> None:
+        """Print the connexions in the graph."""
         for key, values in graph.neighbors.items():
             print(f"name: {key}, \nvalue: {values}")
 
     def pathFinder(
-            self, graph: Graph, banned: set[str] | None = None
-    ) -> list[str] | None:
+            self, graph: Graph,
+            banned: set[str] | None = None) -> list[str] | None:
+        """Return the best route, excluding banned zones, or None if absent."""
         banned = banned or set()
         if graph.start is None or graph.end is None:
             return None
@@ -63,6 +73,7 @@ class DijkstraPathfinder:
     def _rebuild(
             self,
             previous: dict[str, str], start: str, end: str) -> list[str]:
+        """Generate the best path starting from end."""
         path = [end]
         while path[-1] != start:
             path.append(previous[path[-1]])
@@ -70,39 +81,35 @@ class DijkstraPathfinder:
         return path
 
     def find_paths(
-            self, graph: Graph, limit: int = 100) -> list[list[str]]:
-        if graph.start is None or graph.end is None:
+            self, graph: Graph, limit: int = 10) -> list[list[str]]:
+        """Return up to ``limit`` routes ordered by cost and priority."""
+        if limit <= 0 or graph.start is None or graph.end is None:
             return []
 
-        heap: list[tuple[int, int, tuple[str, ...]]] = [
+        paths: list[list[str]] = []
+        queue: list[tuple[int, int, tuple[str, ...]]] = [
             (0, 0, (graph.start,))
         ]
-        paths: list[list[str]] = []
-        seen: set[tuple[str, ...]] = set()
 
-        while heap and len(paths) < limit:
-            turns, prio, path = heapq.heappop(heap)
-            name = path[-1]
-            if name == graph.end:
-                result = list(path)
-                if result not in paths:
-                    paths.append(result)
+        while queue and len(paths) < limit:
+            turns, priority, path = heapq.heappop(queue)
+            current = path[-1]
+            if current == graph.end:
+                paths.append(list(path))
                 continue
 
-            for conn in graph.neighbors[name]:
-                nxt = conn.other(name)
-                if nxt in path:
-                    continue
+            for conn in graph.neighbors[current]:
+                nxt = conn.other(current)
                 zone = graph.zones[nxt]
-                if zone.type is ZoneType.BLOCKED:
+                if nxt in path or zone.type is ZoneType.BLOCKED:
                     continue
-                new_path = path + (nxt,)
-                if new_path in seen:
-                    continue
-                seen.add(new_path)
-                bonus = -1 if zone.type is ZoneType.PRIORITY else 0
-                heapq.heappush(
-                    heap,
-                    (turns + zone.type.cost, prio + bonus, new_path),
+                next_path = path + (nxt,)
+                next_turns = turns + zone.type.cost
+                next_priority = priority + (
+                    -1 if zone.type is ZoneType.PRIORITY else 0
                 )
+                heapq.heappush(
+                    queue, (next_turns, next_priority, next_path)
+                )
+
         return paths

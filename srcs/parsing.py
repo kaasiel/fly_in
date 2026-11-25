@@ -1,8 +1,10 @@
+"""Parse graph-description files into validated graph objects."""
 from typing import Any
 from .model import Graph, ParseError, Connection, build_zone
 
 
 def parse_zone(line: str) -> dict[str, Any]:
+    """Parse a zone declaration into its attributes and metadata."""
     _, _, data = line.partition(":")
     data, meta = split_metadata(data)
     parts = data.split()
@@ -14,6 +16,7 @@ def parse_zone(line: str) -> dict[str, Any]:
 
 
 def parse_conn(line: str) -> Connection:
+    """Parse a connection declaration and its optional capacity metadata."""
     _, _, data = line.partition(":")
     data, meta = split_metadata(data)
     names = data.strip().split("-")
@@ -29,6 +32,7 @@ def parse_conn(line: str) -> Connection:
 
 
 def parse_drone(line: str) -> int:
+    """Parse and validate the declared number of drones."""
     try:
         data = int(line)
     except ValueError:
@@ -41,7 +45,10 @@ def parse_drone(line: str) -> int:
 
 
 class Parser:
+    """Build a graph from a graph-description file."""
+
     def parse(self, path: str) -> Graph:
+        """Read and validate the graph description at ``path``."""
         with open(path) as f:
             lines = f.readlines()
 
@@ -62,6 +69,7 @@ class Parser:
         return graph
 
     def _handle(self, line: str, graph: Graph | None) -> Graph:
+        """Apply one input line to the graph currently being built."""
         kind, _, data = line.partition(":")
         if kind == "nb_drones":
             if graph is not None:
@@ -89,6 +97,7 @@ class Parser:
 
 
 def split_metadata(data: str) -> tuple[str, dict[str, str]]:
+    """Split declaration data into its body and bracketed metadata."""
     meta: dict[str, str] = {}
     if "[" not in data:
         return data, meta

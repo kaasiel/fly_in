@@ -1,12 +1,18 @@
+
+"""Assign drones to routes and simulate their movement through a graph."""
+
 from srcs import Graph, Drone, StateType, ZoneType
 from srcs import DijkstraPathfinder, link_cap_check, path_turns
 
 
 class SimulationError(Exception):
+    """Raised when a valid drone simulation cannot be produced."""
+
     ...
 
 
 def assign(graph: Graph, paths: list[list[str]]) -> list[list[str]]:
+    """Assign each drone to a route using route length and current load."""
     turns = [path_turns(graph, p) for p in paths]
     caps = [link_cap_check(graph, p) for p in paths]
     load = [0] * len(paths)
@@ -20,8 +26,11 @@ def assign(graph: Graph, paths: list[list[str]]) -> list[list[str]]:
 
 
 class Simulator:
+    """Advance drones while respecting zone and link limits."""
+
     def __init__(
             self, graph: Graph, assignement: list[list[str]]) -> None:
+        """Initialize drone positions, routes, and zone occupancy."""
         if graph.start is None or graph.end is None:
             raise SimulationError("map has no start or and")
         self.graph = graph
@@ -35,6 +44,7 @@ class Simulator:
         ]
 
     def run(self) -> list[str]:
+        """Run turns until every drone is delivered."""
         lines: list[str] = []
         while not all(d.state is StateType.DELIVERED for d in self.drones):
             line = self.play_turn()
@@ -44,6 +54,7 @@ class Simulator:
         return lines
 
     def play_turn(self) -> str:
+        """Execute one turn and return its formatted drone movements."""
         gra = self.graph
         moves: list[str] = []
         link_use: dict[frozenset[str], int] = {}
@@ -93,10 +104,14 @@ class Simulator:
 
 
 class Solver:
+    """Find routes and select the fastest valid drone simulation."""
+
     def __init__(self) -> None:
+        """Create the pathfinder used to generate candidate routes."""
         self.finder = DijkstraPathfinder()
 
     def solve(self, graph: Graph) -> list[str]:
+        """Return the movement lines for the best simulation found."""
         paths = self.finder.find_paths(graph)
         if not paths:
             raise SimulationError("No path has been found")

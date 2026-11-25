@@ -8,7 +8,7 @@ install:
 	uv sync
 
 run:
-	uv run python -m src
+	uv run python3 main.py
 
 clean:
 	@rm -rf __pycache__ .mypy_cache .pytest_cache

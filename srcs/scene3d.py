@@ -5,8 +5,9 @@ from pathlib import Path
 import pyray as rl
 from .model import Graph, ZoneType
 from .replay import Replay
-from .visual import (BG, HUD_BG, HUD_HEIGHT, LINK_FULL,
-                     LINK_PART, MUTED, ROUTES, TEXT, rgb, zone_color)
+from .visual import (BG, BTN_GAP, BTN_H, BTN_Y, BUTTONS, GOLD, HUD_BG,
+                     HUD_HEIGHT, LINK_FREE, LINK_FULL, LINK_PART, MUTED,
+                     ROUTES, TEXT, rgb, zone_color)
 
 SCALE = 3.8            # world units per map unit (hub spacing)
 PORTAL_R = 0.85
@@ -21,6 +22,10 @@ LINK_FREE_3D = rl.Color(122, 132, 165, 255)
 LEGEND_TEXT = ("portal = hub | gold halo = priority | spiked = restricted"
                " | sealed = blocked | pips = capacity"
                " | shadow color = route | gray = waiting")
+BUTTONS_3D: list[tuple[str, int, str]] = BUTTONS + [
+    ("camera", 58, "Reset the camera"),
+    ("proj", 58, "Switch iso / perspective"),
+]
 
 
 def lerp3(a: rl.Vector3, b: rl.Vector3, t: float) -> rl.Vector3:
@@ -110,10 +115,6 @@ class IsoCamera:
         self.elevation = max(12.0, min(88.0,
                                        self.elevation + dy * ORBIT_SPEED))
 
-    def snap_iso(self) -> None:
-        self.elevation = self.ISO_ELEVATION
-        self.azimuth = (round((self.azimuth - 45) / 90) * 90 + 45) % 360
-
     def update_touch(self) -> None:
         a, b = rl.get_touch_position(0), rl.get_touch_position(1)
         dist = math.hypot(b.x - a.x, b.y - a.y)
@@ -128,39 +129,17 @@ class IsoCamera:
             self.pan_screen(old_mid, mid)
         self.pinch = (dist, mid, ang)
 
-    def update(self, dt: float) -> None:
-        key = rl.KeyboardKey
-        height = rl.get_screen_height()
+    def update_mouse(self, enabled: bool) -> None:
         mouse = rl.get_mouse_position()
-        centre = rl.Vector2(rl.get_screen_width() / 2, height / 2)
         wheel = rl.get_mouse_wheel_move()
-        if wheel:
+        if wheel and mouse.y >= HUD_HEIGHT:
             self.zoom_at(0.9 ** wheel, mouse)
-        if rl.is_key_down(key.KEY_EQUAL) or rl.is_key_down(key.KEY_KP_ADD):
-            self.zoom_at(0.4 ** dt, centre)
-        if rl.is_key_down(key.KEY_MINUS) \
-                or rl.is_key_down(key.KEY_KP_SUBTRACT):
-            self.zoom_at(2.5 ** dt, centre)
-        if rl.is_key_down(key.KEY_Q):
-            self.azimuth = (self.azimuth - 60 * dt) % 360
-        if rl.is_key_down(key.KEY_E):
-            self.azimuth = (self.azimuth + 60 * dt) % 360
-        step = self.span * 0.6 * dt
-        rx, rz = self.right_axis()
-        fx, fz = self.forward_axis()
-        for k, sx, sz in ((key.KEY_W, fx, fz), (key.KEY_S, -fx, -fz),
-                          (key.KEY_D, rx, rz), (key.KEY_A, -rx, -rz)):
-            if rl.is_key_down(k):
-                self.target.x += sx * step
-                self.target.z += sz * step
-        if rl.is_key_pressed(key.KEY_P):
-            self.ortho = not self.ortho
-        if rl.is_key_pressed(key.KEY_I):
-            self.snap_iso()
         if rl.get_touch_point_count() >= 2:
             self.update_touch()
             return
         self.pinch = None
+        if not enabled:
+            return
         d = rl.get_mouse_delta()
         mb = rl.MouseButton
         if rl.is_mouse_button_down(mb.MOUSE_BUTTON_LEFT):
@@ -505,6 +484,7 @@ class App3D:
         self.progress = 0.0
         self.playing = True
         self.speed = 1.5
+        self.hud_press = False
 
     def open(self) -> None:
         rl.set_config_flags(rl.ConfigFlags.FLAG_MSAA_4X_HINT)
@@ -521,27 +501,83 @@ class App3D:
         self.art.close()
         rl.close_window()
 
-    def handle_keys(self) -> None:
-        key = rl.KeyboardKey
+    # ---------- HUD buttons ----------
+    def hud_buttons(self) -> list[tuple[str, rl.Rectangle, str]]:
+        gaps = BTN_GAP * (len(BUTTONS_3D) - 1)
+        total = sum(w for _, w, _ in BUTTONS_3D) + gaps
+        x = float(self.width - 16 - total)
+        res: list[tuple[str, rl.Rectangle, str]] = []
+        for name, w, tip in BUTTONS_3D:
+            res.append((name, rl.Rectangle(x, BTN_Y, w, BTN_H), tip))
+            x += w + BTN_GAP
+        return res
+
+    def button_at(self, mouse: rl.Vector2) -> str | None:
+        for name, rect, _ in self.hud_buttons():
+            if rl.check_collision_point_rec(mouse, rect):
+                return name
+        return None
+
+    def button_enabled(self, name: str, shown: int) -> bool:
+        if name == "prev":
+            return shown > 0
+        if name == "next":
+            return shown < self.replay.turns
+        if name == "slower":
+            return self.speed > 0.5
+        if name == "faster":
+            return self.speed < 8.0
+        return True
+
+    def replay_from_start(self) -> None:
+        self.turn, self.progress, self.playing = 0, 0.0, True
+
+    def reset_camera(self) -> None:
+        x, z, span = self.home_cam
+        self.cam.target = rl.Vector3(x, 0, z)
+        self.cam.span = span
+        self.cam.azimuth = 315.0
+        self.cam.elevation = IsoCamera.ISO_ELEVATION
+
+    def press_button(self, name: str) -> None:
         last = self.replay.turns
-        if rl.is_key_pressed(key.KEY_SPACE):
-            self.playing = not self.playing
-        if rl.is_key_pressed(key.KEY_RIGHT):
-            self.turn, self.progress = min(self.turn + 1, last), 0.0
-        if rl.is_key_pressed(key.KEY_LEFT):
+        if name == "replay":
+            self.replay_from_start()
+        elif name == "toggle":
+            if self.turn >= last:
+                self.replay_from_start()
+            else:
+                self.playing = not self.playing
+        elif name == "prev":
             self.turn, self.progress = max(self.turn - 1, 0), 0.0
-        if rl.is_key_pressed(key.KEY_UP):
-            self.speed = min(self.speed + 0.5, 8.0)
-        if rl.is_key_pressed(key.KEY_DOWN):
+        elif name == "next":
+            self.turn, self.progress = min(self.turn + 1, last), 0.0
+        elif name == "slower":
             self.speed = max(self.speed - 0.5, 0.5)
-        if rl.is_key_pressed(key.KEY_HOME):
-            self.turn, self.progress, self.playing = 0, 0.0, True
-        if rl.is_key_pressed(key.KEY_R):
-            x, z, span = self.home_cam
-            self.cam.target = rl.Vector3(x, 0, z)
-            self.cam.span = span
-            self.cam.azimuth = 315.0
-            self.cam.elevation = IsoCamera.ISO_ELEVATION
+        elif name == "faster":
+            self.speed = min(self.speed + 0.5, 8.0)
+        elif name == "camera":
+            self.reset_camera()
+        elif name == "proj":
+            self.cam.ortho = not self.cam.ortho
+
+    def handle_mouse(self) -> None:
+        mouse = rl.get_mouse_position()
+        mb = rl.MouseButton
+        buttons = (mb.MOUSE_BUTTON_LEFT, mb.MOUSE_BUTTON_RIGHT,
+                   mb.MOUSE_BUTTON_MIDDLE)
+        name = self.button_at(mouse)
+        if rl.is_mouse_button_pressed(mb.MOUSE_BUTTON_LEFT) \
+                and name is not None:
+            self.press_button(name)
+        if mouse.y < HUD_HEIGHT \
+                and any(rl.is_mouse_button_pressed(b) for b in buttons):
+            self.hud_press = True
+        if not any(rl.is_mouse_button_down(b) for b in buttons):
+            self.hud_press = False
+        rl.set_mouse_cursor(
+            rl.MouseCursor.MOUSE_CURSOR_POINTING_HAND if name is not None
+            else rl.MouseCursor.MOUSE_CURSOR_DEFAULT)
 
     def advance(self) -> None:
         if not self.playing or self.turn >= self.replay.turns:
@@ -594,28 +630,93 @@ class App3D:
             w = rl.measure_text(text, 18)
             rl.draw_text(text, int(s.x - w / 2), int(s.y), 18, TEXT)
 
+    def draw_icon(self, name: str, cx: float, cy: float,
+                  ink: rl.Color) -> None:
+        labels = {"replay": "Replay", "camera": "Reset",
+                  "proj": "Iso" if self.cam.ortho else "Persp"}
+        if name in labels:
+            w = rl.measure_text(labels[name], 16)
+            rl.draw_text(labels[name], int(cx - w / 2), int(cy - 8), 16,
+                         ink)
+        elif name == "prev":
+            rl.draw_triangle(rl.Vector2(cx + 5, cy - 7),
+                             rl.Vector2(cx - 6, cy),
+                             rl.Vector2(cx + 5, cy + 7), ink)
+        elif name == "next" or (name == "toggle" and not self.playing):
+            rl.draw_triangle(rl.Vector2(cx - 5, cy - 7),
+                             rl.Vector2(cx - 5, cy + 7),
+                             rl.Vector2(cx + 6, cy), ink)
+        elif name == "toggle":
+            rl.draw_rectangle(int(cx - 6), int(cy - 7), 4, 14, ink)
+            rl.draw_rectangle(int(cx + 2), int(cy - 7), 4, 14, ink)
+        else:
+            rl.draw_rectangle(int(cx - 6), int(cy - 1), 12, 3, ink)
+            if name == "faster":
+                rl.draw_rectangle(int(cx - 1), int(cy - 6), 3, 13, ink)
+
+    def draw_hud_button(self, name: str, rect: rl.Rectangle, enabled: bool,
+                        glow: bool) -> None:
+        hover = enabled and rl.check_collision_point_rec(
+            rl.get_mouse_position(), rect)
+        fill = rl.Color(38, 42, 60, 255)
+        if hover and rl.is_mouse_button_down(rl.MouseButton.MOUSE_BUTTON_LEFT):
+            fill = rl.Color(70, 76, 108, 255)
+        elif hover:
+            fill = rl.Color(52, 58, 84, 255)
+        ink = TEXT if enabled else LINK_FREE
+        if glow:
+            pulse = 0.65 + 0.35 * math.sin(rl.get_time() * 5)
+            fill = rl.Color(GOLD.r, GOLD.g, GOLD.b, int(255 * pulse))
+            ink = rl.Color(13, 15, 22, 255)
+        rl.draw_rectangle_rounded(rect, 0.3, 6, fill)
+        self.draw_icon(name, rect.x + rect.width / 2,
+                       rect.y + rect.height / 2, ink)
+
+    def draw_tip(self, text: str, rect: rl.Rectangle) -> None:
+        w = rl.measure_text(text, 14)
+        x = min(int(rect.x + rect.width / 2 - w / 2 - 8),
+                self.width - w - 24)
+        rl.draw_rectangle(x, HUD_HEIGHT + 6, w + 16, 24, HUD_BG)
+        rl.draw_text(text, x + 8, HUD_HEIGHT + 11, 14, TEXT)
+
     def draw_hud(self, shown: int) -> None:
         rl.draw_rectangle(0, 0, self.width, HUD_HEIGHT, HUD_BG)
+        total = self.replay.turns
         moves = self.replay.moves_per_turn[shown - 1] if shown > 0 else 0
-        mode = "iso" if self.cam.ortho else "perspective"
+        finished = shown >= total
         state = "playing" if self.playing else "paused"
+        if finished:
+            state = "finished"
         items = [
-            (f"Turn {shown} / {self.replay.turns}", 16),
+            (f"Turn {shown} / {total}", 16),
             (f"Delivered {self.replay.delivered(shown)} / "
              f"{self.graph.nb_drones}", 220),
             (f"Moves {moves}", 450),
-            (f"{state} x{self.speed:.1f}  [{mode}]", 600),
+            (f"{state} x{self.speed:.1f}", 600),
         ]
         for text, x in items:
             rl.draw_text(text, x, 13, 20, TEXT)
-        hint = "drag orbit | right-drag pan | wheel zoom | P iso/3D | R reset"
-        rl.draw_text(hint, self.width - rl.measure_text(hint, 14) - 16,
-                     15, 14, MUTED)
+        mouse = rl.get_mouse_position()
+        tip: tuple[str, rl.Rectangle] | None = None
+        for name, rect, text in self.hud_buttons():
+            enabled = self.button_enabled(name, shown)
+            glow = name == "replay" and finished
+            self.draw_hud_button(name, rect, enabled, glow)
+            if enabled and rl.check_collision_point_rec(mouse, rect):
+                tip = (text, rect)
+        if tip is not None:
+            self.draw_tip(tip[0], tip[1])
+        else:
+            hint = "drag orbit | right-drag pan | wheel zoom"
+            rl.draw_text(hint, self.width - rl.measure_text(hint, 14) - 16,
+                         HUD_HEIGHT + 10, 14, MUTED)
         rl.draw_rectangle(0, self.height - 28, self.width, 28, HUD_BG)
         rl.draw_text(LEGEND_TEXT, 16, self.height - 21, 14, MUTED)
 
     def draw_hover(self, camera: rl.Camera3D) -> None:
         mouse = rl.get_mouse_position()
+        if mouse.y < HUD_HEIGHT:
+            return
         for name, zone in self.graph.zones.items():
             p = self.scene.pos[name]
             s = rl.get_world_to_screen(rl.Vector3(p.x, PORTAL_H, p.z),
@@ -633,8 +734,8 @@ class App3D:
         self.open()
         try:
             while not rl.window_should_close():
-                self.handle_keys()
-                self.cam.update(rl.get_frame_time())
+                self.handle_mouse()
+                self.cam.update_mouse(not self.hud_press)
                 self.advance()
                 self.draw_frame()
         finally:
