@@ -13,6 +13,7 @@ SCALE = 3.8            # world units per map unit (hub spacing)
 PORTAL_R = 0.85
 PORTAL_H = PORTAL_R + 0.3
 DRONE_SIZE = 1.5       # largest dimension of the drone model
+SPRITE_SIZE_MULTIPLIER = 5.0
 FLY_Y = 1.25
 TRANSIT_Y = 2.2
 MODEL_YAW_OFFSET = 0.0  # tune if your model does not face +z
@@ -161,7 +162,10 @@ class DroneArt:
                 box = rl.get_model_bounding_box(model)
                 size = max(box.max.x - box.min.x, box.max.y - box.min.y,
                            box.max.z - box.min.z, 0.001)
-                self.scale = DRONE_SIZE / size
+                target_size = DRONE_SIZE
+                if Path(model_path):
+                    target_size *= SPRITE_SIZE_MULTIPLIER
+                self.scale = target_size / size
                 self.lift = -box.min.y * self.scale
                 self.model = model
 

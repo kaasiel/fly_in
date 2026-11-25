@@ -26,7 +26,7 @@ def main() -> None:
             for output_line in lines:
                 print(output_line)
             if view == "iso":
-                App3D(graph, lines).run()
+                App3D(graph, lines, "srcs/stylized_ww1_plane.glb").run()
             else:
                 App(graph, lines).run()
         print(f"Total turns: {len(lines)}", file=sys.stderr)
