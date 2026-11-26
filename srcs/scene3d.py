@@ -1,3 +1,4 @@
+"""3D isometric visualizer of a Fly-in simulation, drawn with pyray."""
 from __future__ import annotations
 
 import math
@@ -23,26 +24,46 @@ LINK_FREE_3D = rl.Color(122, 132, 165, 255)
 LEGEND_TEXT = ("portal = hub | gold halo = priority | spiked = restricted"
                " | sealed = blocked | pips = capacity"
                " | shadow color = route | gray = waiting")
-BUTTONS_3D: list[tuple[str, int, str]] = BUTTONS + [
+TIPS_3D = {
+    "replay": "Replay from the start",
+    "prev": "Previous turn",
+    "toggle": "Play / pause (Space)",
+    "next": "Next turn",
+    "slower": "Slower",
+    "faster": "Faster",
+}
+BUTTONS_3D: list[tuple[str, int, str]] = [
+    (name, width, TIPS_3D[name]) for name, width, _ in BUTTONS
+] + [
     ("camera", 58, "Reset the camera"),
     ("proj", 58, "Switch iso / perspective"),
 ]
 
 
 def lerp3(a: rl.Vector3, b: rl.Vector3, t: float) -> rl.Vector3:
+    """Return the point at fraction ``t`` of the segment ``a`` to ``b``."""
     return rl.Vector3(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t,
                       a.z + (b.z - a.z) * t)
 
 
 def darker(color: rl.Color, k: float) -> rl.Color:
+    """Return ``color`` with its RGB channels multiplied by ``k``."""
     return rl.Color(int(color.r * k), int(color.g * k),
                     int(color.b * k), color.a)
 
 
 class IsoCamera:
+    """Orbit camera, orthographic (isometric) or perspective.
+
+    Angles are in degrees. ``span`` is the visible world height in
+    orthographic mode, and sets the distance in perspective mode.
+    ``ISO_ELEVATION`` is the elevation of the classic isometric view.
+    """
+
     ISO_ELEVATION = math.degrees(math.atan(1 / math.sqrt(2)))
 
     def __init__(self) -> None:
+        """Start with the isometric view, orthographic."""
         self.azimuth = 315.0
         self.elevation = self.ISO_ELEVATION
         self.target = rl.Vector3(0, 0, 0)
@@ -51,14 +72,23 @@ class IsoCamera:
         self.pinch: tuple[float, rl.Vector2, float] | None = None
 
     def right_axis(self) -> tuple[float, float]:
+        """Return the (x, z) ground direction of the screen right."""
         az = math.radians(self.azimuth)
         return math.cos(az), -math.sin(az)
 
     def forward_axis(self) -> tuple[float, float]:
+        """Return the (x, z) ground direction away from the camera."""
         az = math.radians(self.azimuth)
         return -math.sin(az), -math.cos(az)
 
     def fit(self, xs: list[float], zs: list[float], aspect: float) -> None:
+        """Center the camera on the map and zoom to show all of it.
+
+        Args:
+            xs: World X coordinates of the zones.
+            zs: World Z coordinates of the zones.
+            aspect: Window width divided by window height.
+        """
         x0, x1, z0, z1 = min(xs), max(xs), min(zs), max(zs)
         self.target = rl.Vector3((x0 + x1) / 2, 0, (z0 + z1) / 2)
         rx, rz = self.right_axis()
@@ -72,6 +102,11 @@ class IsoCamera:
         self.span = max(height, width / aspect)
 
     def build(self) -> rl.Camera3D:
+        """Build the raylib camera from the current angles and span.
+
+        In perspective mode the camera is placed far enough to show about the
+        same area as the orthographic one.
+        """
         az = math.radians(self.azimuth)
         el = math.radians(self.elevation)
         if self.ortho:
@@ -90,6 +125,12 @@ class IsoCamera:
                            fovy, proj)
 
     def ground_at(self, screen: rl.Vector2) -> rl.Vector3 | None:
+        """Return the point of the ground under a screen position.
+
+        Returns:
+            The 3D point at height 0, or None if the view ray is parallel to
+            the ground.
+        """
         ray = rl.get_screen_to_world_ray(screen, self.build())
         if abs(ray.direction.y) < 1e-6:
             return None
@@ -98,6 +139,11 @@ class IsoCamera:
                           ray.position.z + ray.direction.z * k)
 
     def zoom_at(self, factor: float, screen: rl.Vector2) -> None:
+        """Zoom by ``factor`` while keeping the point under ``screen``.
+
+        A factor below 1 zooms in. The visible span stays between 6 and 160
+        world units.
+        """
         before = self.ground_at(screen)
         self.span = max(6.0, min(160.0, self.span * factor))
         after = self.ground_at(screen)
@@ -106,17 +152,23 @@ class IsoCamera:
             self.target.z += before.z - after.z
 
     def pan_screen(self, prev: rl.Vector2, cur: rl.Vector2) -> None:
+        """Move the target so the ground follows the mouse."""
         a, b = self.ground_at(prev), self.ground_at(cur)
         if a is not None and b is not None:
             self.target.x += a.x - b.x
             self.target.z += a.z - b.z
 
     def orbit_pixels(self, dx: float, dy: float) -> None:
+        """Rotate the camera from a mouse movement in pixels.
+
+        The elevation is kept between 12 and 88 degrees.
+        """
         self.azimuth = (self.azimuth - dx * ORBIT_SPEED) % 360
         self.elevation = max(12.0, min(88.0,
                                        self.elevation + dy * ORBIT_SPEED))
 
     def update_touch(self) -> None:
+        """Handle two fingers: pinch to zoom, twist to rotate, drag to pan."""
         a, b = rl.get_touch_position(0), rl.get_touch_position(1)
         dist = math.hypot(b.x - a.x, b.y - a.y)
         mid = rl.Vector2((a.x + b.x) / 2, (a.y + b.y) / 2)
@@ -131,6 +183,15 @@ class IsoCamera:
         self.pinch = (dist, mid, ang)
 
     def update_mouse(self, enabled: bool) -> None:
+        """Handle the wheel, the touch screen and the mouse drags.
+
+        Left-drag orbits, right or middle drag pans. The wheel does nothing
+        over the top bar.
+
+        Args:
+            enabled: False to ignore the drags, for example after a click on
+                the HUD.
+        """
         mouse = rl.get_mouse_position()
         wheel = rl.get_mouse_wheel_move()
         if wheel and mouse.y >= HUD_HEIGHT:
@@ -152,7 +213,18 @@ class IsoCamera:
 
 
 class DroneArt:
+    """Load and draw the drone model, with a built-in fallback.
+
+    If the model file is missing or invalid, a small procedural dragon made
+    of spheres, a cylinder and triangles is drawn instead.
+    """
+
     def __init__(self, model_path: str | None) -> None:
+        """Load the model if it exists and compute its scale and lift.
+
+        Args:
+            model_path: Path of the 3D model, or None to use the fallback.
+        """
         self.model: rl.Model | None = None
         self.scale = 1.0
         self.lift = 0.0
@@ -163,18 +235,29 @@ class DroneArt:
                 size = max(box.max.x - box.min.x, box.max.y - box.min.y,
                            box.max.z - box.min.z, 0.001)
                 target_size = DRONE_SIZE
-                if Path(model_path):
+                if model and Path(model_path).is_file():
                     target_size *= SPRITE_SIZE_MULTIPLIER
                 self.scale = target_size / size
                 self.lift = -box.min.y * self.scale
                 self.model = model
 
     def close(self) -> None:
+        """Unload the model if one was loaded."""
         if self.model is not None:
             rl.unload_model(self.model)
 
     def draw(self, pos: rl.Vector3, yaw: float, color: rl.Color,
              waiting: bool, t: float, ident: int) -> None:
+        """Draw one drone at ``pos``.
+
+        Args:
+            pos: World position.
+            yaw: Heading in degrees around the vertical axis.
+            color: Body color of the fallback dragon (the route color).
+            waiting: Whether the drone is waiting, which greys it out.
+            t: Time in seconds, used for the wing flap.
+            ident: Drone id, so that the flaps are not synchronized.
+        """
         if self.model is not None:
             tint = rl.Color(170, 170, 190, 255) if waiting else rl.WHITE
             at = rl.Vector3(pos.x, pos.y - 0.5 + self.lift, pos.z)
@@ -188,6 +271,14 @@ class DroneArt:
 
     def draw_fallback(self, pos: rl.Vector3, yaw: float, body: rl.Color,
                       flap: float) -> None:
+        """Draw the built-in dragon.
+
+        Args:
+            pos: World position.
+            yaw: Heading in degrees around the vertical axis.
+            body: Body color.
+            flap: Wing flap, between -1 and 1.
+        """
         wing = darker(body, 0.6)
         belly = rl.Color(245, 222, 170, 255)
         rl.rl_push_matrix()
@@ -216,8 +307,22 @@ class DroneArt:
 
 
 class Scene3D:
+    """Draw the 3D world: floor, links, zones, drones and glows.
+
+    Map coordinates are multiplied by ``SCALE``; the map X and Y become
+    the world X and Z.
+    """
+
     def __init__(self, graph: Graph, replay: Replay, cam: IsoCamera,
                  art: DroneArt) -> None:
+        """Compute the world position of each zone and list each link once.
+
+        Args:
+            graph: Graph of the map.
+            replay: Precomputed frames of the simulation.
+            cam: Camera, used to turn the portals toward the viewer.
+            art: Drawer of the drone model.
+        """
         self.graph = graph
         self.replay = replay
         self.cam = cam
@@ -238,14 +343,17 @@ class Scene3D:
                      for a in [i * math.tau / 20 for i in range(20)]]
 
     def special(self, name: str) -> bool:
+        """Return whether ``name`` is the start or the end zone."""
         return name in (self.graph.start, self.graph.end)
 
     def bounds(self) -> tuple[list[float], list[float]]:
+        """Return the world X and Z coordinates of every zone."""
         pts = list(self.pos.values())
         return [p.x for p in pts], [p.z for p in pts]
 
     # ---------- opaque pass ----------
     def draw_floor(self) -> None:
+        """Draw the dark floor under the whole map."""
         xs, zs = self.bounds()
         cx, cz = (min(xs) + max(xs)) / 2, (min(zs) + max(zs)) / 2
         size = rl.Vector2(max(xs) - min(xs) + 10, max(zs) - min(zs) + 10)
@@ -254,6 +362,15 @@ class Scene3D:
 
     def strip(self, a: rl.Vector3, b: rl.Vector3, width: float,
               y: float, color: rl.Color) -> None:
+        """Draw a flat strip between two points, used for the links.
+
+        Args:
+            a: First end point.
+            b: Second end point.
+            width: Width of the strip.
+            y: Height of the strip above the floor.
+            color: Fill color.
+        """
         dx, dz = b.x - a.x, b.z - a.z
         rl.rl_push_matrix()
         rl.rl_translatef((a.x + b.x) / 2, y, (a.z + b.z) / 2)
@@ -263,11 +380,19 @@ class Scene3D:
         rl.rl_pop_matrix()
 
     def link_color(self, used: int, cap: int) -> rl.Color:
+        """Return the color of a link from its usage.
+
+        Grey when free, orange when partly used and red when full.
+        """
         if used >= cap:
             return LINK_FULL
         return LINK_PART if used > 0 else LINK_FREE_3D
 
     def draw_links(self, turn: int) -> None:
+        """Draw every link as a dark strip with a colored center line.
+
+        The color shows the usage of the link at ``turn``.
+        """
         usage = self.replay.link_use[turn]
         for conn in self.links:
             a, b = conn.ends
@@ -280,6 +405,7 @@ class Scene3D:
                        color)
 
     def draw_link_glow(self, turn: int) -> None:
+        """Draw a translucent halo around the links used at ``turn``."""
         usage = self.replay.link_use[turn]
         for conn in self.links:
             a, b = conn.ends
@@ -292,6 +418,11 @@ class Scene3D:
                        rl.fade(self.link_color(used, cap), 0.2))
 
     def draw_zone(self, name: str, turn: int) -> None:
+        """Draw the pad of a zone and its portal.
+
+        Start and end zones are larger pads with two colored rings. Other
+        zones get a portal frame facing the camera, and capacity pips.
+        """
         zone = self.graph.zones[name]
         p = self.pos[name]
         color = zone_color(zone.color)
@@ -313,11 +444,26 @@ class Scene3D:
 
     def tube(self, a: tuple[float, float], b: tuple[float, float],
              r: float, color: rl.Color, z: float = 0.0) -> None:
+        """Draw a thin cylinder between two points of the portal plane.
+
+        Args:
+            a: First (x, y) point, relative to the center of the portal.
+            b: Second (x, y) point, relative to the center of the portal.
+            r: Radius of the tube.
+            color: Fill color.
+            z: Depth offset in the portal plane.
+        """
         rl.draw_cylinder_ex(rl.Vector3(a[0], PORTAL_H + a[1], z),
                             rl.Vector3(b[0], PORTAL_H + b[1], z),
                             r, r, 6, color)
 
     def draw_frame_ring(self, ztype: ZoneType, color: rl.Color) -> None:
+        """Draw the portal ring and the decoration of the zone type.
+
+        Priority zones get a gold outer ring, restricted zones red spikes and
+        a red outer ring, and blocked zones a darker ring crossed by two red
+        bars.
+        """
         n = len(self.ring)
         base = darker(color, 0.5) if ztype is ZoneType.BLOCKED else color
         for i in range(n):
@@ -351,6 +497,11 @@ class Scene3D:
             self.tube((d, -d), (-d, d), 0.1, bar)
 
     def draw_pips(self, name: str, turn: int) -> None:
+        """Draw the occupancy pips on the ground in front of a zone.
+
+        A filled sphere is an occupied slot, an orange circle a reserved one
+        and a grey circle a free one. At most 8 slots are shown.
+        """
         p = self.pos[name]
         cap = min(self.graph.zones[name].max_drone, 8)
         count = len(self.replay.occupants[turn].get(name, []))
@@ -372,6 +523,12 @@ class Scene3D:
 
     # ---------- drones ----------
     def anchor(self, frame: int, ident: int) -> rl.Vector3:
+        """Return the world position of a drone in a frame, at ground level.
+
+        A drone in transit sits in the middle of its link. Several drones in
+        the same zone are spread side by side. Drones stacked on the start or
+        end pad share the pad center.
+        """
         zone, dest = self.replay.frames[frame][ident]
         if dest is not None:
             return lerp3(self.pos[zone], self.pos[dest], 0.5)
@@ -384,6 +541,11 @@ class Scene3D:
         return rl.Vector3(p.x + rx * o, 0, p.z + rz * o)
 
     def altitude(self, frame: int, ident: int) -> float:
+        """Return the flying height of a drone in a frame.
+
+        Drones in transit fly higher. Waiting drones, except at the start,
+        hover a little lower.
+        """
         zone, dest = self.replay.frames[frame][ident]
         if dest is not None:
             return TRANSIT_Y
@@ -392,6 +554,11 @@ class Scene3D:
         return FLY_Y
 
     def stacked(self, frame: int, ident: int) -> bool:
+        """Return whether a drone is stacked on the start or end pad.
+
+        With ``STACK_LIMIT`` at 0, every drone on those pads is stacked, so it
+        stays hidden there until it leaves.
+        """
         zone, dest = self.replay.frames[frame][ident]
         if dest is not None or not self.special(zone):
             return False
@@ -399,6 +566,15 @@ class Scene3D:
 
     def drone_pose(self, turn: int, progress: float,
                    ident: int) -> rl.Vector3 | None:
+        """Return the position of a drone between two consecutive turns.
+
+        The movement is eased like in the 2D view and gets a small bobbing.
+        The heading follows the direction of the movement.
+
+        Returns:
+            The world position, or None for a drone idle on the start or end
+            pad, which is not drawn.
+        """
         nxt = min(turn + 1, self.replay.turns)
         here = self.replay.frames[turn][ident]
         there = self.replay.frames[nxt][ident]
@@ -418,6 +594,13 @@ class Scene3D:
 
     def draw_drones(self, turn: int, progress: float) -> list[
             tuple[int, rl.Vector3]]:
+        """Draw every visible drone with its shadow.
+
+        The shadow takes the route color, or grey for a waiting drone.
+
+        Returns:
+            The (id, world position) of each drawn drone, used for labels.
+        """
         shown: list[tuple[int, rl.Vector3]] = []
         t = rl.get_time()
         for ident in self.replay.frames[turn]:
@@ -437,6 +620,12 @@ class Scene3D:
 
     # ---------- translucent pass ----------
     def draw_glow(self, name: str, t: float) -> None:
+        """Draw the translucent parts of a zone.
+
+        Start and end zones get a light beam. Other zones get a glowing disc
+        in the portal with small sparks, or a dark disc when blocked. Call it
+        after the opaque pass.
+        """
         zone = self.graph.zones[name]
         p = self.pos[name]
         color = zone_color(zone.color)
@@ -475,9 +664,20 @@ class Scene3D:
 
 
 class App3D:
+    """Own the window, the animation state and the inputs of the 3D view."""
+
     def __init__(self, graph: Graph, lines: list[str],
                  model_path: str | None = "assets/dragon.glb",
                  width: int = 1280, height: int = 720) -> None:
+        """Prepare the replay and the camera.
+
+        Args:
+            graph: Parsed graph of the map.
+            lines: Simulation output, one line of moves per turn.
+            model_path: Path of the drone model, or None for the fallback.
+            width: Window width in pixels.
+            height: Window height in pixels.
+        """
         self.width = width
         self.height = height
         self.graph = graph
@@ -491,6 +691,7 @@ class App3D:
         self.hud_press = False
 
     def open(self) -> None:
+        """Open the window, create the scene and fit the camera to the map."""
         rl.set_config_flags(rl.ConfigFlags.FLAG_MSAA_4X_HINT)
         rl.init_window(self.width, self.height, "Fly-in 3D")
         rl.set_target_fps(60)
@@ -502,11 +703,13 @@ class App3D:
                          self.cam.span)
 
     def close(self) -> None:
+        """Free the model and close the window."""
         self.art.close()
         rl.close_window()
 
     # ---------- HUD buttons ----------
     def hud_buttons(self) -> list[tuple[str, rl.Rectangle, str]]:
+        """Return the HUD buttons as (name, rectangle, tooltip)."""
         gaps = BTN_GAP * (len(BUTTONS_3D) - 1)
         total = sum(w for _, w, _ in BUTTONS_3D) + gaps
         x = float(self.width - 16 - total)
@@ -517,12 +720,14 @@ class App3D:
         return res
 
     def button_at(self, mouse: rl.Vector2) -> str | None:
+        """Return the name of the HUD button under ``mouse``, or None."""
         for name, rect, _ in self.hud_buttons():
             if rl.check_collision_point_rec(mouse, rect):
                 return name
         return None
 
     def button_enabled(self, name: str, shown: int) -> bool:
+        """Return whether a button is usable at the displayed turn."""
         if name == "prev":
             return shown > 0
         if name == "next":
@@ -534,9 +739,11 @@ class App3D:
         return True
 
     def replay_from_start(self) -> None:
+        """Restart the animation from turn 0 and start playing."""
         self.turn, self.progress, self.playing = 0, 0.0, True
 
     def reset_camera(self) -> None:
+        """Restore the position, zoom and angles of the start."""
         x, z, span = self.home_cam
         self.cam.target = rl.Vector3(x, 0, z)
         self.cam.span = span
@@ -544,6 +751,12 @@ class App3D:
         self.cam.elevation = IsoCamera.ISO_ELEVATION
 
     def press_button(self, name: str) -> None:
+        """Run the action of a HUD button.
+
+        Args:
+            name: One of replay, toggle, prev, next, slower, faster, camera or
+                proj.
+        """
         last = self.replay.turns
         if name == "replay":
             self.replay_from_start()
@@ -566,6 +779,11 @@ class App3D:
             self.cam.ortho = not self.cam.ortho
 
     def handle_mouse(self) -> None:
+        """Process clicks on the HUD buttons and set the mouse cursor.
+
+        A press that starts on the top bar sets ``hud_press``, so the camera
+        does not move during that drag.
+        """
         mouse = rl.get_mouse_position()
         mb = rl.MouseButton
         buttons = (mb.MOUSE_BUTTON_LEFT, mb.MOUSE_BUTTON_RIGHT,
@@ -583,7 +801,13 @@ class App3D:
             rl.MouseCursor.MOUSE_CURSOR_POINTING_HAND if name is not None
             else rl.MouseCursor.MOUSE_CURSOR_DEFAULT)
 
+    def handle_keys(self) -> None:
+        """Pause or resume the animation with the Space bar."""
+        if rl.is_key_pressed(rl.KeyboardKey.KEY_SPACE):
+            self.press_button("toggle")
+
     def advance(self) -> None:
+        """Advance the animation clock by one frame when playing."""
         if not self.playing or self.turn >= self.replay.turns:
             return
         self.progress += rl.get_frame_time() * self.speed
@@ -591,6 +815,11 @@ class App3D:
             self.turn, self.progress = self.turn + 1, 0.0
 
     def draw_frame(self) -> None:
+        """Draw one full frame: the 3D scene, the labels and the HUD.
+
+        The opaque objects come first. The translucent glows come last, with
+        the depth mask disabled.
+        """
         t = rl.get_time()
         shown = min(self.turn + (1 if self.progress > 0.5 else 0),
                     self.replay.turns)
@@ -618,6 +847,13 @@ class App3D:
     def draw_labels(self, camera: rl.Camera3D,
                     drones: list[tuple[int, rl.Vector3]],
                     shown: int) -> None:
+        """Draw the drone numbers and the start and end counters.
+
+        Args:
+            camera: Camera used to project world points on the screen.
+            drones: (id, world position) of each drawn drone.
+            shown: Displayed turn.
+        """
         for ident, pos in drones:
             s = rl.get_world_to_screen(
                 rl.Vector3(pos.x, pos.y + 0.9, pos.z), camera)
@@ -636,6 +872,7 @@ class App3D:
 
     def draw_icon(self, name: str, cx: float, cy: float,
                   ink: rl.Color) -> None:
+        """Draw the icon or label of a HUD button centered on (cx, cy)."""
         labels = {"replay": "Replay", "camera": "Reset",
                   "proj": "Iso" if self.cam.ortho else "Persp"}
         if name in labels:
@@ -660,6 +897,11 @@ class App3D:
 
     def draw_hud_button(self, name: str, rect: rl.Rectangle, enabled: bool,
                         glow: bool) -> None:
+        """Draw one HUD button with its hover, pressed and glow states.
+
+        ``glow`` makes the button pulse in gold. It is used on Replay when the
+        animation is finished.
+        """
         hover = enabled and rl.check_collision_point_rec(
             rl.get_mouse_position(), rect)
         fill = rl.Color(38, 42, 60, 255)
@@ -677,6 +919,7 @@ class App3D:
                        rect.y + rect.height / 2, ink)
 
     def draw_tip(self, text: str, rect: rl.Rectangle) -> None:
+        """Draw a tooltip under the HUD, kept inside the window."""
         w = rl.measure_text(text, 14)
         x = min(int(rect.x + rect.width / 2 - w / 2 - 8),
                 self.width - w - 24)
@@ -684,6 +927,7 @@ class App3D:
         rl.draw_text(text, x + 8, HUD_HEIGHT + 11, 14, TEXT)
 
     def draw_hud(self, shown: int) -> None:
+        """Draw the top bar, its tooltip or hint, and the legend bar."""
         rl.draw_rectangle(0, 0, self.width, HUD_HEIGHT, HUD_BG)
         total = self.replay.turns
         moves = self.replay.moves_per_turn[shown - 1] if shown > 0 else 0
@@ -711,13 +955,15 @@ class App3D:
         if tip is not None:
             self.draw_tip(tip[0], tip[1])
         else:
-            hint = "drag orbit | right-drag pan | wheel zoom"
+            hint = ("drag orbit | right-drag pan | wheel zoom"
+                    " | Space play/pause")
             rl.draw_text(hint, self.width - rl.measure_text(hint, 14) - 16,
                          HUD_HEIGHT + 10, 14, MUTED)
         rl.draw_rectangle(0, self.height - 28, self.width, 28, HUD_BG)
         rl.draw_text(LEGEND_TEXT, 16, self.height - 21, 14, MUTED)
 
     def draw_hover(self, camera: rl.Camera3D) -> None:
+        """Draw the type and capacity of the zone under the mouse."""
         mouse = rl.get_mouse_position()
         if mouse.y < HUD_HEIGHT:
             return
@@ -735,9 +981,11 @@ class App3D:
                 return
 
     def run(self) -> None:
+        """Open the window and run the main loop until it is closed."""
         self.open()
         try:
             while not rl.window_should_close():
+                self.handle_keys()
                 self.handle_mouse()
                 self.cam.update_mouse(not self.hud_press)
                 self.advance()
